@@ -8,10 +8,16 @@ from badger.errors import (
     BadgerInterfaceChannelError
 )
 from .utils import get_buffer_stats
+from PyQt5.QtNetwork import QNetworkRequest
+from PyQt5.QtCore import QUrl
+from PyQt5.QtNetwork import QNetworkReply, QNetworkAccessManager
+from pydantic import PrivateAttr
 
+logger = logging.getLogger(__name__)
 
 class Environment(environment.Environment):
 
+    _network_manager: QNetworkAccessManager = PrivateAttr(default_factory=QNetworkAccessManager)
     name = 'lcls_ii'
     variables = {
         'QUAD:COL0:240:BCTRL': [],
@@ -360,3 +366,44 @@ class Environment(environment.Environment):
             observable_outputs[obs] = value
 
         return observable_outputs
+
+    def search(self, keyword: str, callback: callable) -> None:
+        """
+        Initiates a search using the given keyword and calls the callback
+        with the list of variables once the network reply is processed.
+
+        Parameters
+        ----------
+        keyword : str
+            The search term.
+        callback : callable
+            A function that takes a list of strings; it will be called with the
+            processed search results.
+        """
+        url_string = (
+            f"http://lcls-archapp.slac.stanford.edu/"
+            f"retrieval/bpl/searchForPVsRegex?regex=.*{keyword}.*"
+        )
+        request = QNetworkRequest(QUrl(url_string))
+        reply = self._network_manager.get(request)
+        reply.finished.connect(lambda: self._handle_search_reply(reply, callback))
+
+    def _handle_search_reply(self, reply: QNetworkReply, callback: callable) -> None:
+        """
+        Processes the QNetworkReply and calls the provided callback with the results.
+
+        Parameters
+        ----------
+        reply : QNetworkReply
+            The network reply object.
+        callback : callable
+            A function to call with the processed list of PVs.
+        """
+        if reply.error() == QNetworkReply.NoError:
+            bytes_str = reply.readAll()
+            pv_list = str(bytes_str, "utf-8").split()
+            callback(pv_list)
+        else:
+            logger.error(f"Could not retrieve archiver results due to: {reply.error()}")
+            callback([])  # Optionally, you could pass None or an empty list on error
+        reply.deleteLater()
