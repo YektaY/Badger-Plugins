@@ -1,9 +1,11 @@
 import random
 import time
 from typing import Dict
+import warnings
 
 import numpy as np
 from badger import interface
+from badger.interface import InterfaceInfo
 
 import epics
 
@@ -16,6 +18,39 @@ class Interface(interface.Interface):
 
     # Private variables
     _pvs: Dict = {}
+
+    @interface.log
+    def reset_interface(self):
+        epics.ca.clear_cache()
+
+    @interface.log
+    def get_info(self, channel_names: list[str]) -> InterfaceInfo:
+        result: InterfaceInfo = {
+            'vars': {},
+            'interface': {
+                'name': self.name,
+                'num_registered_pvs': len(self._pvs)
+            }
+        }
+
+        for channel in channel_names:
+            pv = self._pvs.get(channel)
+            if pv is None:
+                pv = epics.get_pv(channel)
+                self._pvs[channel] = pv
+
+            pv.wait_for_connection(1)
+
+            result['vars'][channel] = {
+                'name': channel,
+                'protocol': 'CA',
+                'connected': str(pv.connected),
+                'status': pv.char_status,
+                'host': pv.host,
+                'access': pv.access,
+                'type': pv.type,
+            }
+        return result
 
     @interface.log
     def get_values(self, channel_names, as_string: bool = False):
@@ -44,7 +79,9 @@ class Interface(interface.Interface):
             count_down = 2  # second
             flag = True
             while count_down > 0:
-                value = pv.get(as_string=as_string)
+                value = pv.get(as_string=as_string, use_monitor=False, timeout=2)
+                if value is None:
+                    raise Exception(f"CAGET failed for PV {channel}")
 
                 if type(value) is str:
                     channel_outputs[channel] = value
@@ -68,10 +105,8 @@ class Interface(interface.Interface):
                 count_down -= 0.1
 
             if flag:
-                raise Exception(
-                    f"PV {channel} readout ({channel_outputs[channel]}) "
-                    + "is invalid!"
-                )
+                warnings.warn(f"PV {channel} returned no valid value!")
+                channel_outputs[channel] = np.nan
 
         return channel_outputs
 
@@ -105,7 +140,10 @@ class Interface(interface.Interface):
             count_down = 2  # second
             flag = True
             while count_down > 0:
-                _value = pv.get()
+                _value = pv.get(timeout=2, use_monitor=False)
+                if _value is None:
+                    raise Exception(f"CAGET failed for PV {channel}")
+
                 if value:
                     if np.isclose(_value, value, rtol=1e-3):
                         channel_outputs[channel] = _value
